@@ -1,0 +1,8 @@
+[2025-04-19 07:16:33] Вы: Привет
+[2025-04-19 07:16:43] Табуретка: привет привет
+[2025-04-19 07:18:25] Вы: cd /home/noc/work/telegramCLI/core
+[2025-04-19 07:18:35] Вы: cd /home/noc/work/telegramCLI/ui
+[2025-04-19 07:18:40] Вы: cd /home/noc/work/telegramCLI
+[2025-04-19 07:18:45] Вы: cd /home/noc/work/telegramCLI/core
+[2025-04-19 07:18:51] Вы: cd /home/noc/work/telegramCLI/assets
+[2025-04-19 07:18:54] Вы: cd /home/noc/work/telegramCLI/core
