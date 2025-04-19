@@ -1,0 +1,383 @@
+import os
+import time
+import threading
+import requests
+from datetime import datetime
+import curses
+from curses import wrapper
+from enum import Enum
+import locale
+import json
+import pygame
+import time
+
+
+pygame.mixer.init()
+pygame.mixer.music.load('o-privet.mp3')
+pygame.mixer.music.play()
+
+CONTACTS_FILE = "contacts.json"
+
+def load_contacts():
+    if not os.path.exists(CONTACTS_FILE):
+        return {}
+    with open(CONTACTS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_contacts(contacts):
+    with open(CONTACTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(contacts, f, ensure_ascii=False, indent=2)
+
+
+locale.setlocale(locale.LC_ALL, '')
+
+# --- Настройки ---
+BOT_TOKEN = '7765561530:AAEek8zz2W73AgGhFkIGN2boPrQKLO8W-IM'
+API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+contacts = load_contacts()
+chat_names = {v: k for k, v in contacts.items()}
+
+
+history_dir = "history"
+
+last_update_id = None
+
+
+
+
+
+class State(Enum):
+    MAIN_MENU = 1
+    CHAT_SELECTION = 2
+    CHAT_VIEW = 3
+    ADD_CHAT = 4
+    DEV_INFO = 5
+
+
+
+
+
+def log_message(chat_name, sender, text):
+    os.makedirs(history_dir, exist_ok=True)
+    filename = f"{history_dir}/{chat_name}.txt"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(filename, "a", encoding="utf-8") as f:
+        f.write(f"[{now}] {sender}: {text}\n")
+
+def load_history(chat_name):
+    filename = f"{history_dir}/{chat_name}.txt"
+    if not os.path.exists(filename):
+        return []
+    with open(filename, "r", encoding="utf-8") as f:
+        return [(line.split("] ")[1].split(": ")[0],
+                 ": ".join(line.split("] ")[1].split(": ")[1:]))
+                for line in f.read().splitlines()]
+
+def clear_history(chat_name):
+    filename = f"{history_dir}/{chat_name}.txt"
+    if os.path.exists(filename):
+        os.remove(filename)
+        return f"🗑 История с {chat_name} очищена."
+    return f"⛔️ История с {chat_name} не найдена."
+
+def send_message(chat_id, text):
+    try:
+        response = requests.post(f"{API_URL}/sendMessage", data={'chat_id': chat_id, 'text': text})
+        if response.status_code != 200:
+            return f"⚠️ Ошибка отправки: {response.text}"
+    except Exception as e:
+        return f"⚠️ Ошибка: {e}"
+
+def get_updates(offset=None):
+    try:
+        response = requests.get(f"{API_URL}/getUpdates", params={'timeout': 10, 'offset': offset})
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        print(f"⚠️ Ошибка обновления: {e}")
+        return {}
+
+
+
+
+
+
+def receive_loop(state):
+    global last_update_id
+    while True:
+        updates = get_updates(offset=last_update_id)
+        for update in updates.get("result", []):
+            last_update_id = update["update_id"] + 1
+            message = update.get("message")
+            if not message:
+                continue
+
+            chat_id = message["chat"]["id"]
+            text = message.get("text", "")
+            if message["chat"]["type"] in ["group", "supergroup"]:
+                sender = message["from"].get("first_name", "Неизвестный")
+                if "last_name" in message["from"]:
+                    sender += " " + message["from"]["last_name"]
+            else:
+                sender = chat_names.get(chat_id, message["from"].get("first_name", "Неизвестный"))
+            chat_name = chat_names.get(chat_id)
+            if chat_name:
+                log_message(chat_name, sender, text)
+                if chat_name == state["active_chat"]:
+                    state["messages"].append((sender, text))
+        time.sleep(1)
+
+def draw_main_menu(stdscr, selected_index):
+    stdscr.clear()
+    h, w = stdscr.getmaxyx()
+    title = "📲 Telegram CLI"
+    stdscr.addstr(1, (w - len(title)) // 2, title)
+
+Табуретка, [4/19/25 6:23 AM]
+menu = ["Выбрать чат", "Просмотреть историю", "Очистить историю", "Добавить чат", "О разработке", "Выход"]
+    for i, item in enumerate(menu):
+        x = (w - len(item)) // 2
+        y = h // 2 - len(menu) // 2 + i
+        if i == selected_index:
+            stdscr.attron(curses.color_pair(1))
+            stdscr.addstr(y, x, f"> {item} <")
+            stdscr.attroff(curses.color_pair(1))
+        else:
+            stdscr.addstr(y, x, item)
+    stdscr.refresh()
+
+def draw_chat_selection(stdscr, selected_index):
+    stdscr.clear()
+    h, w = stdscr.getmaxyx()
+    stdscr.addstr(1, (w - len("📇 Выберите чат")) // 2, "📇 Выберите чат")
+
+    keys = list(contacts.keys())
+    for i, name in enumerate(keys):
+        x = (w - len(name)) // 2
+        y = h // 2 - len(keys) // 2 + i
+        if i == selected_index:
+            stdscr.attron(curses.color_pair(1))
+            stdscr.addstr(y, x, f"> {name} <")
+            stdscr.attroff(curses.color_pair(1))
+        else:
+            stdscr.addstr(y, x, name)
+    stdscr.refresh()
+
+def draw_chat_view(stdscr, state):
+    stdscr.clear()
+    h, w = stdscr.getmaxyx()
+
+    title = f"💬 Чат с {state['active_chat']}"
+    stdscr.addstr(1, (w - len(title)) // 2, title)
+
+    # Показываем последние сообщения
+    max_msg_lines = h - 6 if state["state"] == State.CHAT_VIEW else h - 4
+    msg_start = max(0, len(state["messages"]) - max_msg_lines)
+
+    for i, (sender, text) in enumerate(state["messages"][msg_start:]):
+        line = f"{sender}: {text}"
+        stdscr.addstr(3 + i, 2, line[:w - 4])
+
+    # Отображаем поле ввода только в режиме чата
+    if state["state"] == State.CHAT_VIEW:
+        stdscr.addstr(h - 3, 2, "✏️ Введите сообщение:")
+        stdscr.addstr(h - 2, 2, "> " + state["input_text"][:w - 4])
+        help_text = "ESC: Назад | Enter: Отправить"
+        stdscr.addstr(h - 1, w - len(help_text) - 2, help_text)
+    else:
+        stdscr.addstr(h - 2, (w - len("Нажмите ESC для возврата")) // 2, "Нажмите ESC для возврата")
+
+    stdscr.refresh()
+
+def draw_add_chat(stdscr, state):
+    stdscr.clear()
+    h, w = stdscr.getmaxyx()
+    stdscr.addstr(1, (w - len("➕ Добавить новый чат")) // 2, "➕ Добавить новый чат")
+
+    stdscr.addstr(h//2 - 1, 2, "Имя чата:")
+    stdscr.addstr(h//2, 4, state.get("new_chat_name", ""))
+
+    stdscr.addstr(h//2 + 2, 2, "Chat ID:")
+    stdscr.addstr(h//2 + 3, 4, state.get("new_chat_id", ""))
+
+    help_text = "ESC: Назад | Enter: Отправить"
+    stdscr.addstr(h - 1, w - len(help_text) - 2, help_text)
+    stdscr.refresh()
+
+def draw_dev_info(stdscr, state):
+    stdscr.clear()
+    h, w = stdscr.getmaxyx()
+    stdscr.addstr(1, (w - len("✏️ О разработке")) // 2, "✏️ О разработке")
+
+    stdscr.addstr(h//2, w//2 - 20, "Данный клиент был разработан для общества.")
+    stdscr.addstr(h//2 + 1, w//2 - 16, "Код своболен для изменений комьюнити.")
+    stdscr.addstr(h//2 + 2, w//2 - 21, "разработан с помощью ИИ и хакера доброй воли.")
+
+    stdscr.refresh()
+
+
+
+
+
+
+
+def main(stdscr):
+    curses.curs_set(1)
+    curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
+    stdscr.timeout(100)
+
+    state = {
+        "state": State.MAIN_MENU,
+        "selected_index": 0,
+        "active_chat": None,
+        "messages": [],
+        "input_text": ""
+    }
+
+    threading.Thread(target=receive_loop, args=(state,), daemon=True).start()
+
+    while True:
+        match state["state"]:
+            case State.MAIN_MENU:
+                draw_main_menu(stdscr, state["selected_index"])
+            case State.CHAT_SELECTION:
+                draw_chat_selection(stdscr, state["selected_index"])
+            case State.CHAT_VIEW:
+                draw_chat_view(stdscr, state)
+            case State.ADD_CHAT:
+                draw_add_chat(stdscr, state)
+            case State.DEV_INFO:
+                draw_dev_info(stdscr, state)
+
+        try:
+            key = stdscr.get_wch()
+            is_enter = key in (10, 13, '\n', curses.KEY_ENTER)
+            is_esc = key in ('\x1b', 27)
+        except curses.error:
+            continue
+
+Табуретка, [4/19/25 6:23 AM]
+if state["state"] == State.MAIN_MENU:
+            if key in [curses.KEY_UP, 'k']:
+                state["selected_index"] = max(0, state["selected_index"] - 1)
+            elif key in [curses.KEY_DOWN, 'j']:
+                state["selected_index"] = min(5, state["selected_index"] + 1)
+            elif is_enter:
+                match state["selected_index"]:
+                    case 0:  # Выбрать чат
+                        state["state"] = State.CHAT_SELECTION
+                        state["selected_index"] = 0
+
+                    case 1:  # Просмотреть историю
+                        if state["active_chat"]:
+                            state["messages"] = load_history(state["active_chat"])
+                        else:
+                            state["messages"] = [("Система", "⚠️ Сначала выберите чат")]
+                        state["state"] = State.CHAT_VIEW
+
+                    case 2:  # Очистить историю
+                        if state["active_chat"]:
+                            result = clear_history(state["active_chat"])
+                            state["messages"] = [("Система", result)]
+                        else:
+                            state["messages"] = [("Система", "⚠️ Сначала выберите чат")]
+                        state["state"] = State.CHAT_VIEW
+
+                    case 3:  # 🔧 Добавить чат
+                        state["state"] = State.ADD_CHAT
+                        state["new_chat_name"] = ""
+                        state["new_chat_id"] = ""
+                        state["add_chat_field"] = "name"
+
+                    case 4:
+                        state["state"] = State.DEV_INFO
+
+                    case 5:  # 🚪 Выход
+                        pygame.mixer.music.load('da-poshiol-ty-nakhui.mp3')
+                        pygame.mixer.music.play()
+                        time.sleep(5)
+                        break
+
+            elif is_esc:
+                break
+
+        elif state["state"] == State.CHAT_SELECTION:
+            if key == curses.KEY_UP:
+                state["selected_index"] = max(0, state["selected_index"] - 1)
+            elif key == curses.KEY_DOWN:
+                state["selected_index"] = min(len(contacts) - 1, state["selected_index"] + 1)
+            elif is_enter:
+                state["active_chat"] = list(contacts.keys())[state["selected_index"]]
+                state["messages"] = load_history(state["active_chat"])
+                state["input_text"] = ""
+                state["state"] = State.CHAT_VIEW
+            elif is_esc:
+                state["state"] = State.MAIN_MENU
+                state["selected_index"] = 0
+
+        elif state["state"] == State.CHAT_VIEW:
+            if is_esc:
+                state["state"] = State.MAIN_MENU
+                state["selected_index"] = 0
+
+            # Только если пользователь реально в чате, а не просто смотрит или очищал
+            elif state["active_chat"]:
+                if is_enter:
+                    text = state["input_text"].strip()
+                    if text:
+                        error = send_message(contacts[state["active_chat"]], text)
+                        if error:
+                            state["messages"].append(("Ошибка", error))
+                        else:
+                            log_message(state["active_chat"], "Вы", text)
+                            state["messages"].append(("Вы", text))
+                        state["input_text"] = ""
+                elif isinstance(key, str):
+                    if key == '\x7f':
+                        state["input_text"] = state["input_text"][:-1]
+                    elif key.isprintable():
+                        state["input_text"] += key
+                elif isinstance(key, int):
+                    if key in (curses.KEY_BACKSPACE, 127):
+                        state["input_text"] = state["input_text"][:-1]
+
+Табуретка, [4/19/25 6:23 AM]
+elif state["state"] == State.ADD_CHAT:
+            field = state.get("add_chat_field", "name")
+            if is_esc:
+                state["state"] = State.MAIN_MENU
+                state["selected_index"] = 0
+            elif key == '\t':
+                state["add_chat_field"] = "id" if field == "name" else "name"
+            elif is_enter:
+                name = state.get("new_chat_name", "").strip()
+                chat_id = state.get("new_chat_id", "").strip()
+                if name and chat_id.lstrip('-').isdigit():
+                    contacts[name] = int(chat_id)
+                    save_contacts(contacts)
+                    chat_names[int(chat_id)] = name
+                    state["messages"] = [("Система", f"✅ Добавлен чат {name} ({chat_id})")]
+                    state["active_chat"] = name
+                    state["state"] = State.CHAT_VIEW
+                    state["input_text"] = ""
+                else:
+                    state["messages"] = [("Система", "⚠️ Введите корректные данные")]
+                    state["state"] = State.CHAT_VIEW
+            elif isinstance(key, str):
+                if key == '\x7f':
+                    field_key = "new_chat_name" if field == "name" else "new_chat_id"
+                    state[field_key] = state.get(field_key, "")[:-1]
+                elif key.isprintable():
+                    field_key = "new_chat_name" if field == "name" else "new_chat_id"
+                    state[field_key] = state.get(field_key, "") + key
+
+        elif state["state"] == State.DEV_INFO:
+            if is_esc:
+                state["state"] = State.MAIN_MENU
+                state["selected_index"] = 0
+
+
+if name == "main":
+    wrapper(main)
+    print("✅ Программа завершена.")
