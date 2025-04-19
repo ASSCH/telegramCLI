@@ -32,7 +32,7 @@ def save_contacts(contacts):
 locale.setlocale(locale.LC_ALL, '')
 
 # --- Настройки ---
-BOT_TOKEN = '7765561530:AAEek8zz2W73AgGhFkIGN2boPrQKLO8W-IM'
+BOT_TOKEN = 'ТОКЕН'
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 contacts = load_contacts()
